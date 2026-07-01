@@ -143,9 +143,11 @@ class DrQEncoder(nn.Module):
     """
 
     feature_dim: int = 256
+    dropout_rate: float = None
+    layer_norm: bool = False
 
     @nn.compact
-    def __call__(self, x, train=True, cond_var=None):
+    def __call__(self, x, z=None, train=True, cond_var=None):
         init = nn.initializers.xavier_uniform()
 
         x = x.astype(jnp.float32) / 255.0 - 0.5
@@ -193,9 +195,15 @@ class DrQEncoder(nn.Module):
 
         x = x.reshape((*x.shape[:-3], -1))
         x = nn.Dense(self.feature_dim, kernel_init=init, name='proj')(x)
+        # Keep projection normalization fixed for the DrQ encoder; layer_norm is
+        # accepted only for compatibility with the shared encoder registry.
         x = nn.LayerNorm(epsilon=1e-5, name='proj_ln')(x)
+        x = jnp.tanh(x)
 
-        return jnp.tanh(x)
+        if z is not None:
+            x = jnp.concatenate([x, z], axis=-1)
+
+        return x
 #################################################################
 
 class GCEncoder(nn.Module):
