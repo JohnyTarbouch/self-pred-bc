@@ -3,6 +3,7 @@ import glob
 import copy
 import os
 import pickle
+import time
 from typing import Any, Dict, Mapping, Sequence
 
 import flax
@@ -160,7 +161,7 @@ class TrainState(flax.struct.PyTreeNode):
         return self.apply_gradients(grads=grads), info
 
 
-def save_agent(agent, save_dir, epoch):
+def save_agent(agent, save_dir, epoch, max_retries=3):
     """Save the agent to a file.
 
     Args:
@@ -173,10 +174,28 @@ def save_agent(agent, save_dir, epoch):
         agent=flax.serialization.to_state_dict(agent),
     )
     save_path = os.path.join(save_dir, f'params_{epoch}.pkl')
-    with open(save_path, 'wb') as f:
-        pickle.dump(save_dict, f)
+    os.makedirs(save_dir, exist_ok=True)
 
-    print(f'Saved to {save_path}')
+    for attempt in range(1, max_retries + 1):
+        tmp_path = f'{save_path}.tmp-{os.getpid()}-{attempt}'
+        try:
+            with open(tmp_path, 'wb') as f:
+                pickle.dump(save_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, save_path)
+            print(f'Saved to {save_path}')
+            return True
+        except OSError as exc:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            if attempt == max_retries:
+                print(f'WARNING: failed to save checkpoint {save_path}: {exc}')
+                return False
+            time.sleep(5 * attempt)
 
 
 def restore_agent(agent, restore_path, restore_epoch):
