@@ -19,6 +19,54 @@ def random_crop(img, crop_from, padding):
     return jax.lax.dynamic_slice(padded_img, crop_from, img.shape)
 
 
+#################################################################
+# DrQ random shift augmentation.
+def shift_batch_np(arr, shifts, pad):
+    """Replicate-pad images and crop each image using its own integer shift.
+
+    arr:
+        Image batch, shape (N, H, W, C)
+
+    shifts:
+        Integer shifts, shape (N, 2), each value in [0, 2 * pad]
+
+    This matches DrQ-style random shifts:
+        edge padding + random crop
+    """
+    n, h, w, _ = arr.shape
+    padded = np.pad(arr, ((0, 0), (pad, pad), (pad, pad), (0, 0)), mode='edge')
+
+    rows = shifts[:, 0:1] + np.arange(h)
+    cols = shifts[:, 1:2] + np.arange(w)
+    batch_idxs = np.arange(n)[:, None, None]
+
+    return padded[batch_idxs, rows[:, :, None], cols[:, None, :], :]
+
+
+def random_shifts_batch(batch, keys, pad=2, rng=None):
+    """Apply DrQ-style random shift augmentation to image arrays in batch.
+
+    Only 4D arrays are augmented:
+        (N, H, W, C)
+
+    This stays on the host with NumPy, matching the common DrQ random-shift
+    augmentation style: edge-pad, then crop each image by a random integer shift.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+
+    for key in keys:
+        arr = batch[key]
+        if getattr(arr, 'ndim', 0) != 4:
+            continue
+
+        n = arr.shape[0]
+        shifts = rng.integers(0, 2 * pad + 1, size=(n, 2))
+        batch[key] = shift_batch_np(np.asarray(arr), shifts, pad)
+
+    return batch
+#################################################################
+
+
 @partial(jax.jit, static_argnames=('padding',))
 def batched_random_crop(imgs, crop_froms, padding):
     return jax.vmap(random_crop, (0, 0, None))(imgs, crop_froms, padding)
@@ -250,6 +298,13 @@ class GCDataset:
         return goal_idxs
 
     def augment(self, batch, keys):
+        aug_type = self.config.get('aug_type', 'crop')
+
+        if aug_type == 'drq_shift':
+            pad = self.config.get('drq_shift_pad', 2)
+            random_shifts_batch(batch, keys, pad=pad)
+            return
+
         padding = 3
         batch_size = len(batch[keys[0]])
         crop_froms = np.random.randint(0, 2 * padding + 1, (batch_size, 2))
